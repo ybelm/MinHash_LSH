@@ -25,6 +25,7 @@ class ShingleDB:
     def nnz(self) -> int:
         return int(self.offsets[-1])
 
+
 @dataclass
 class MinHashParams:
     a: np.ndarray
@@ -38,6 +39,7 @@ class MinHashParams:
         a = rng.integers(1, p, size=n_hashes, dtype=np.int64)
         b = rng.integers(0, p, size=n_hashes, dtype=np.int64)
         return MinHashParams(a=a, b=b, n_hashes=n_hashes)
+
 
 def _hash_shingles(tokens: np.ndarray, k: int) -> np.ndarray:
     L = tokens.shape[0]
@@ -53,6 +55,7 @@ def _hash_shingles(tokens: np.ndarray, k: int) -> np.ndarray:
     ids = (h % np.uint64(int(MERSENNE_P))).astype(np.int64)
     return np.unique(ids)
 
+
 def build_shingle_db(docs: list[np.ndarray], k: int,
                      ground_truth: set | None = None) -> ShingleDB:
     per_doc = [_hash_shingles(d, k) for d in docs]
@@ -62,6 +65,7 @@ def build_shingle_db(docs: list[np.ndarray], k: int,
             else np.zeros(0, dtype=np.int64))
     return ShingleDB(vals=vals, offsets=offsets, n_docs=len(docs),
                      ground_truth=ground_truth or set())
+
 
 def minhash_signatures_numpy(db: ShingleDB, params: MinHashParams) -> np.ndarray:
     N = params.n_hashes
@@ -74,6 +78,7 @@ def minhash_signatures_numpy(db: ShingleDB, params: MinHashParams) -> np.ndarray
         hashed = (a * X + b) % p
         sig[:, d] = hashed.min(axis=1)
     return sig
+
 
 def minhash_signatures_python(db: ShingleDB, params: MinHashParams) -> np.ndarray:
     N = params.n_hashes
@@ -94,6 +99,7 @@ def minhash_signatures_python(db: ShingleDB, params: MinHashParams) -> np.ndarra
                     m = v
             sig[i, d] = m
     return sig
+
 
 def lsh_candidate_pairs(sig: np.ndarray, n_bands: int) -> set:
     N, D = sig.shape
@@ -120,6 +126,7 @@ def lsh_candidate_pairs(sig: np.ndarray, n_bands: int) -> set:
                     candidates.add((i, j) if i < j else (j, i))
     return candidates
 
+
 def verify_pairs(sig: np.ndarray, candidates, threshold: float) -> set:
     N = sig.shape[0]
     out = set()
@@ -129,6 +136,7 @@ def verify_pairs(sig: np.ndarray, candidates, threshold: float) -> set:
             out.add((i, j))
     return out
 
+
 def exact_jaccard(db: ShingleDB, i: int, j: int) -> float:
     A = db.doc(i)
     B = db.doc(j)
@@ -136,6 +144,7 @@ def exact_jaccard(db: ShingleDB, i: int, j: int) -> float:
     if not sa and not sb:
         return 1.0
     return len(sa & sb) / len(sa | sb)
+
 
 def optimal_bands(n_hashes: int, threshold: float) -> int:
     best_b, best_err = 1, 1e9
@@ -148,6 +157,7 @@ def optimal_bands(n_hashes: int, threshold: float) -> int:
         if err < best_err:
             best_err, best_b = err, b
     return best_b
+
 
 def generate_corpus(n_docs: int, vocab_size: int = 20000,
                     doc_len: int = 300, doc_len_jitter: int = 60,
@@ -194,3 +204,46 @@ def generate_corpus(n_docs: int, vocab_size: int = 20000,
     ground_truth = {(int(min(inv[i], inv[j])), int(max(inv[i], inv[j])))
                     for (i, j) in ground_truth}
     return docs, ground_truth
+
+
+@dataclass
+class BenchStats:
+    label: str = "bench"
+    mean: float = 0.0
+    std: float = 0.0
+    min: float = 0.0
+    max: float = 0.0
+    cpu_mean: float = 0.0
+    n_runs: int = 0
+
+    def line(self) -> str:
+        return (f"  {self.label:<32}  mean={self.mean:8.4f}s  std={self.std:7.4f}s  "
+                f"min={self.min:8.4f}s  max={self.max:8.4f}s  cpu={self.cpu_mean:8.4f}s  "
+                f"(n={self.n_runs})")
+
+
+def benchmark(fn, *args, n_runs: int = 10, warmup: int = 2,
+              label: str = "bench") -> tuple[BenchStats, object]:
+    for _ in range(warmup):
+        result = fn(*args)
+    wall, cpu = [], []
+    for _ in range(n_runs):
+        c0, w0 = time.process_time(), time.perf_counter()
+        result = fn(*args)
+        w1, c1 = time.perf_counter(), time.process_time()
+        wall.append(w1 - w0)
+        cpu.append(c1 - c0)
+    wall = np.asarray(wall)
+    s = BenchStats(label=label, mean=float(wall.mean()), std=float(wall.std()),
+                   min=float(wall.min()), max=float(wall.max()),
+                   cpu_mean=float(np.mean(cpu)), n_runs=n_runs)
+    return s, result
+
+
+def recall_precision(found: set, truth: set) -> tuple[float, float]:
+    if not truth:
+        return 1.0, 1.0 if not found else 0.0
+    tp = len(found & truth)
+    recall = tp / len(truth)
+    precision = tp / len(found) if found else 0.0
+    return recall, precision
