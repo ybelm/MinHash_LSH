@@ -6,6 +6,9 @@ from numba import njit, prange, set_num_threads, get_num_threads
 from core import ShingleDB, MinHashParams, MERSENNE_P
 
 
+
+# Kernels - docs-major output (D, N): inner loop over hashes = unit stride
+
 @njit(parallel=True, fastmath=True, nogil=True)
 def _kernel_parallel_dmajor(vals, offsets, a, b, P, N):
     D = offsets.shape[0] - 1
@@ -17,7 +20,7 @@ def _kernel_parallel_dmajor(vals, offsets, a, b, P, N):
             sig[d, i] = P
         for idx in range(lo, hi):
             x = vals[idx]
-            for i in range(N):
+            for i in range(N):                     # SIMD-friendly inner loop
                 v = (a[i] * x + b[i]) % P
                 if v < sig[d, i]:
                     sig[d, i] = v
@@ -60,6 +63,9 @@ def _kernel_parallel_dmajor_nofast(vals, offsets, a, b, P, N):
     return sig
 
 
+
+# Kernel - hashes-major output (N, D): inner loop over hashes is strided in
+# the output. Used to measure the layout penalty.
 @njit(parallel=True, fastmath=True, nogil=True)
 def _kernel_parallel_hmajor(vals, offsets, a, b, P, N):
     D = offsets.shape[0] - 1
@@ -78,9 +84,10 @@ def _kernel_parallel_hmajor(vals, offsets, a, b, P, N):
     return sig
 
 
+
+# Public wrappers
 def _prep(db: ShingleDB, params: MinHashParams):
-    return (db.vals, db.offsets, params.a, params.b,
-            np.int64(MERSENNE_P), np.int64(params.n_hashes))
+    return (db.vals, db.offsets, params.a, params.b,np.int64(MERSENNE_P), np.int64(params.n_hashes))
 
 
 def minhash_numba_serial(db: ShingleDB, params: MinHashParams) -> np.ndarray:
@@ -88,10 +95,7 @@ def minhash_numba_serial(db: ShingleDB, params: MinHashParams) -> np.ndarray:
     return _kernel_serial_dmajor(v, o, a, b, P, N).T
 
 
-def minhash_numba_parallel(db: ShingleDB, params: MinHashParams,
-                           n_threads: int | None = None,
-                           layout: str = "dmajor",
-                           fastmath: bool = True) -> np.ndarray:
+def minhash_numba_parallel(db: ShingleDB, params: MinHashParams,n_threads: int | None = None, layout: str = "dmajor",fastmath: bool = True) -> np.ndarray:
     if n_threads is not None:
         set_num_threads(n_threads)
     v, o, a, b, P, N = _prep(db, params)
@@ -112,17 +116,16 @@ def warmup(db: ShingleDB, params: MinHashParams) -> None:
 if __name__ == "__main__":
     import core as C
     print("Validating Numba kernels against the NumPy reference...")
-    docs, _ = C.generate_corpus(200, vocab_size=5000, doc_len=200,
-                                n_dup_clusters=5, cluster_size=3, seed=4)
+    docs, _ = C.generate_corpus(200, vocab_size=5000, doc_len=200, n_dup_clusters=5, cluster_size=3, seed=4)
     db = C.build_shingle_db(docs, k=4)
     params = C.MinHashParams.create(96, seed=8)
 
     ref = C.minhash_signatures_numpy(db, params)
     checks = {
-        "serial            ": minhash_numba_serial(db, params),
-        "parallel dmajor   ": minhash_numba_parallel(db, params, layout="dmajor"),
-        "parallel hmajor   ": minhash_numba_parallel(db, params, layout="hmajor"),
-        "parallel no-fastm ": minhash_numba_parallel(db, params, fastmath=False),
+        "serial": minhash_numba_serial(db, params),
+        "parallel dmajor": minhash_numba_parallel(db, params, layout="dmajor"),
+        "parallel hmajor": minhash_numba_parallel(db, params, layout="hmajor"),
+        "parallel no-fastm": minhash_numba_parallel(db, params, fastmath=False),
     }
     ok_all = True
     for name, sig in checks.items():

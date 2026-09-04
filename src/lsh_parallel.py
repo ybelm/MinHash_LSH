@@ -45,7 +45,7 @@ def lsh_reduction(sig: np.ndarray, n_bands: int, n_threads: int) -> set:
             local |= _pairs_from_band(_band_keys(sig, band, r))
         return local
 
-
+    # Split bands across threads (static, contiguous partition)
     chunks = [band_ids[t::n_threads] for t in range(n_threads)]
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
         partials = list(ex.map(work, chunks))
@@ -76,7 +76,7 @@ def lsh_shared_lock(sig: np.ndarray, n_bands: int, n_threads: int) -> set:
                     for y in range(x + 1, m):
                         i, j = members[x], members[y]
                         pair = (i, j) if i < j else (j, i)
-                        with lock:
+                        with lock:   # lock per insert
                             shared.add(pair)
 
     chunks = [band_ids[t::n_threads] for t in range(n_threads)]
@@ -96,7 +96,7 @@ def lsh_coarse_lock(sig: np.ndarray, n_bands: int, n_threads: int) -> set:
         local = set()
         for band in my_bands:
             local |= _pairs_from_band(_band_keys(sig, band, r))
-        with lock:
+        with lock:   # one merge per thread
             shared.update(local)
 
     chunks = [band_ids[t::n_threads] for t in range(n_threads)]
@@ -115,8 +115,7 @@ STRATEGIES = {
 if __name__ == "__main__":
     import core as C
     print("Validating parallel LSH strategies against the reference...")
-    docs, _ = C.generate_corpus(1000, vocab_size=8000, doc_len=200,
-                                n_dup_clusters=30, cluster_size=4, seed=1)
+    docs, _ = C.generate_corpus(1000, vocab_size=8000, doc_len=200, n_dup_clusters=30, cluster_size=4, seed=1)
     db = C.build_shingle_db(docs, k=4)
     params = C.MinHashParams.create(128, seed=2)
     sig = C.minhash_signatures_numpy(db, params)

@@ -1,22 +1,22 @@
 from __future__ import annotations
-
 import time
 from dataclasses import dataclass, field
-
 import numpy as np
 
 
-MERSENNE_P = np.int64((1 << 31) - 1)
-POLY_BASE = np.uint64(1099511628211)
-SIG_DTYPE = np.int64
+# Constants
+MERSENNE_P = np.int64((1 << 31) - 1)      # 2147483647, prime; shingle-id field
+POLY_BASE = np.uint64(1099511628211)      # base for the shingle hash
+SIG_DTYPE = np.int64                       # signature / hash arithmetic dtype
 
 
+# Data representation
 @dataclass
 class ShingleDB:
     vals: np.ndarray
     offsets: np.ndarray
     n_docs: int
-    ground_truth: set = field(default_factory=set)
+    ground_truth: set = field(default_factory=set)   # known near-dup pairs (i<j)
 
     def doc(self, d: int) -> np.ndarray:
         return self.vals[self.offsets[d]:self.offsets[d + 1]]
@@ -41,10 +41,12 @@ class MinHashParams:
         return MinHashParams(a=a, b=b, n_hashes=n_hashes)
 
 
+
+# Shingling
 def _hash_shingles(tokens: np.ndarray, k: int) -> np.ndarray:
     L = tokens.shape[0]
     if L < k:
-
+        # Degenerate -> treat the whole (short) doc as a single shingle.
         k = L
     n_sh = L - k + 1
     t = tokens.astype(np.uint64)
@@ -56,17 +58,17 @@ def _hash_shingles(tokens: np.ndarray, k: int) -> np.ndarray:
     return np.unique(ids)
 
 
-def build_shingle_db(docs: list[np.ndarray], k: int,
-                     ground_truth: set | None = None) -> ShingleDB:
+def build_shingle_db(docs: list[np.ndarray], k: int, ground_truth: set | None = None) -> ShingleDB:
     per_doc = [_hash_shingles(d, k) for d in docs]
     offsets = np.zeros(len(per_doc) + 1, dtype=np.int64)
     offsets[1:] = np.cumsum([s.shape[0] for s in per_doc])
     vals = (np.concatenate(per_doc) if per_doc
             else np.zeros(0, dtype=np.int64))
-    return ShingleDB(vals=vals, offsets=offsets, n_docs=len(docs),
-                     ground_truth=ground_truth or set())
+    return ShingleDB(vals=vals, offsets=offsets, n_docs=len(docs), ground_truth=ground_truth or set())
 
 
+
+# MinHash
 def minhash_signatures_numpy(db: ShingleDB, params: MinHashParams) -> np.ndarray:
     N = params.n_hashes
     sig = np.empty((N, db.n_docs), dtype=SIG_DTYPE)
@@ -74,8 +76,8 @@ def minhash_signatures_numpy(db: ShingleDB, params: MinHashParams) -> np.ndarray
     b = params.b[:, None]
     p = MERSENNE_P
     for d in range(db.n_docs):
-        X = db.doc(d)[None, :]
-        hashed = (a * X + b) % p
+        X = db.doc(d)[None, :]   # (1, S)
+        hashed = (a * X + b) % p # (N, S)
         sig[:, d] = hashed.min(axis=1)
     return sig
 
@@ -101,14 +103,16 @@ def minhash_signatures_python(db: ShingleDB, params: MinHashParams) -> np.ndarra
     return sig
 
 
+
+# LSH banding
 def lsh_candidate_pairs(sig: np.ndarray, n_bands: int) -> set:
     N, D = sig.shape
-    assert N % n_bands == 0, "n_hashes must be divisible by n_bands"
+    assert N % n_bands == 0, "n_hashes dev'essere divisibile per n_bands"
     r = N // n_bands
     candidates: set = set()
     for band in range(n_bands):
-        rows = sig[band * r:(band + 1) * r, :]
-
+        rows = sig[band * r:(band + 1) * r, :]        # (r, D)
+        # Hash each length-r column to one bucket id via a polynomial hash
         keys = np.zeros(D, dtype=np.uint64)
         base = POLY_BASE
         for row in range(r):
@@ -126,7 +130,7 @@ def lsh_candidate_pairs(sig: np.ndarray, n_bands: int) -> set:
                     candidates.add((i, j) if i < j else (j, i))
     return candidates
 
-
+# Keep candidate pairs whose MinHash-estimated similarity >= threshold
 def verify_pairs(sig: np.ndarray, candidates, threshold: float) -> set:
     N = sig.shape[0]
     out = set()
@@ -159,13 +163,10 @@ def optimal_bands(n_hashes: int, threshold: float) -> int:
     return best_b
 
 
-def generate_corpus(n_docs: int, vocab_size: int = 20000,
-                    doc_len: int = 300, doc_len_jitter: int = 60,
-                    n_dup_clusters: int = 0, cluster_size: int = 3,
-                    mutation_rate: float = 0.10, zipf_s: float = 1.2,
-                    seed: int = 0):
+# Synthetic dataset (with injected near-duplicate clusters for correctness)
+def generate_corpus(n_docs: int, vocab_size: int = 20000, doc_len: int = 300, doc_len_jitter: int = 60,n_dup_clusters: int = 0, 
+                    cluster_size: int = 3, mutation_rate: float = 0.10, zipf_s: float = 1.2,seed: int = 0):
     rng = np.random.default_rng(seed)
-
     ranks = np.arange(1, vocab_size + 1)
     weights = 1.0 / np.power(ranks, zipf_s)
     weights /= weights.sum()
@@ -197,7 +198,7 @@ def generate_corpus(n_docs: int, vocab_size: int = 20000,
                 i, j = cluster_ids[x], cluster_ids[y]
                 ground_truth.add((i, j) if i < j else (j, i))
 
-    perm = rng.permutation(len(docs))
+    perm = rng.permutation(len(docs))  # shuffle so dups aren't adjacent
     inv = np.empty_like(perm)
     inv[perm] = np.arange(len(perm))
     docs = [docs[p] for p in perm]
@@ -213,7 +214,7 @@ class BenchStats:
     std: float = 0.0
     min: float = 0.0
     max: float = 0.0
-    cpu_mean: float = 0.0
+    cpu_mean: float = 0.0  # perf_counter of process CPU time (sum of threads)
     n_runs: int = 0
 
     def line(self) -> str:
@@ -222,8 +223,7 @@ class BenchStats:
                 f"(n={self.n_runs})")
 
 
-def benchmark(fn, *args, n_runs: int = 10, warmup: int = 2,
-              label: str = "bench") -> tuple[BenchStats, object]:
+def benchmark(fn, *args, n_runs: int = 10, warmup: int = 2, label: str = "bench") -> tuple[BenchStats, object]:
     for _ in range(warmup):
         result = fn(*args)
     wall, cpu = [], []
@@ -234,12 +234,12 @@ def benchmark(fn, *args, n_runs: int = 10, warmup: int = 2,
         wall.append(w1 - w0)
         cpu.append(c1 - c0)
     wall = np.asarray(wall)
-    s = BenchStats(label=label, mean=float(wall.mean()), std=float(wall.std()),
-                   min=float(wall.min()), max=float(wall.max()),
+    s = BenchStats(label=label, mean=float(wall.mean()), std=float(wall.std()), min=float(wall.min()), max=float(wall.max()),
                    cpu_mean=float(np.mean(cpu)), n_runs=n_runs)
     return s, result
 
 
+# Correctness helpers
 def recall_precision(found: set, truth: set) -> tuple[float, float]:
     if not truth:
         return 1.0, 1.0 if not found else 0.0

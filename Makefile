@@ -1,11 +1,6 @@
 PY = python3
 SRC = src
 
-.PHONY: all setup test validate experiments experiments-quick plots clean help
-
-help:
-	@echo "Targets: setup test validate experiments experiments-quick plots all clean"
-
 setup:
 	$(PY) -m pip install -r requirements.txt
 
@@ -17,6 +12,10 @@ validate:
 	cd $(SRC) && $(PY) minhash_joblib.py
 	cd $(SRC) && $(PY) lsh_parallel.py
 	cd $(SRC) && $(PY) async_preprocess.py
+
+
+validate-gpu-sim:
+	cd $(SRC) && NUMBA_ENABLE_CUDASIM=1 $(PY) minhash_cuda.py
 
 experiments-quick:
 	cd $(SRC) && $(PY) run_experiments.py --quick

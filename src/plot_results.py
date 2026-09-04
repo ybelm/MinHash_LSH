@@ -159,6 +159,40 @@ def plot_vectorization():
     _save(fig, "08_vectorization.png")
 
 
+def plot_gpu():
+    df = _load("gpu_block_size.csv")
+    if df is not None:
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        g = df[df.kernel == "global"]
+        ax.plot(g.block_size, g.mean_s, marker="^", color=C_PAR, linewidth=2,
+                label="global kernel")
+        sh = df[df.kernel == "shared"]
+        if len(sh):
+            ax.axhline(sh.mean_s.values[0], linestyle="--", color=C_SEQ,
+                       label="shared kernel")
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xlabel("Threads per block [log2]")
+        ax.set_ylabel("Kernel time (s) [log]")
+        ax.set_title("CUDA MinHash: block-size sweep")
+        ax.grid(True, which="major", linestyle="--", alpha=0.4)
+        ax.legend()
+        _save(fig, "09_gpu_block_size.png")
+
+    df = _load("gpu_compare.csv")
+    if df is not None:
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        colors = [C_SEQ if "cpu" in i else C_PAR for i in df.impl]
+        ax.bar(df.impl, df.mean_s, color=colors)
+        ax.set_ylabel("Mean time (s)")
+        ax.set_title("GPU vs CPU MinHash")
+        for x, (m, sp) in enumerate(zip(df.mean_s, df.speedup_vs_cpu)):
+            ax.text(x, m, f"{sp:.2f}x", ha="center", va="bottom", fontsize=9)
+        ax.grid(True, axis="y", which="major", linestyle="--", alpha=0.4)
+        plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
+        _save(fig, "10_gpu_vs_cpu.png")
+
+
 if __name__ == "__main__":
     print("Rendering figures from results/ ...")
     plot_impl()
@@ -168,4 +202,5 @@ if __name__ == "__main__":
     plot_joblib()
     plot_lsh_sync()
     plot_vectorization()
+    plot_gpu()
     print(f"\nFigures written to {os.path.relpath(PLOTS)}")

@@ -31,9 +31,7 @@ def _chunk_bounds(n_docs: int, n_chunks: int):
             if edges[c + 1] > edges[c]]
 
 
-def minhash_joblib(db: ShingleDB, params: MinHashParams,
-                   n_jobs: int = -1, n_chunks: int | None = None,
-                   backend: str = "loky") -> np.ndarray:
+def minhash_joblib(db: ShingleDB, params: MinHashParams, n_jobs: int = -1, n_chunks: int | None = None, backend: str = "loky") -> np.ndarray:
     N = params.n_hashes
     P = int(MERSENNE_P)
     if n_chunks is None:
@@ -54,8 +52,7 @@ def minhash_joblib(db: ShingleDB, params: MinHashParams,
 if __name__ == "__main__":
     import core as C
     print("Validating joblib MinHash against the NumPy reference...")
-    docs, _ = C.generate_corpus(300, vocab_size=6000, doc_len=180,
-                                n_dup_clusters=8, cluster_size=3, seed=6)
+    docs, _ = C.generate_corpus(300, vocab_size=6000, doc_len=180, n_dup_clusters=8, cluster_size=3, seed=6)
     db = C.build_shingle_db(docs, k=4)
     params = C.MinHashParams.create(80, seed=2)
     ref = C.minhash_signatures_numpy(db, params)
@@ -63,8 +60,7 @@ if __name__ == "__main__":
     ok_all = True
     for backend in ("loky", "threading"):
         for n_chunks in (4, 16, 64):
-            sig = minhash_joblib(db, params, n_jobs=2, n_chunks=n_chunks,
-                                 backend=backend)
+            sig = minhash_joblib(db, params, n_jobs=2, n_chunks=n_chunks, backend=backend)
             ok = np.array_equal(sig, ref)
             ok_all &= ok
             print(f"  backend={backend:<11} n_chunks={n_chunks:<3} "

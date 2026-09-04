@@ -3,29 +3,26 @@ from __future__ import annotations
 import argparse
 import os
 import time
-
 import numpy as np
 import pandas as pd
-
 import core as C
 import minhash_numba as MN
 import minhash_joblib as MJ
 import lsh_parallel as LP
-from numba import get_num_threads, set_num_threads
+import minhash_cuda as MC
+from numba import get_num_threads
 
 RESULTS = os.path.join(os.path.dirname(__file__), "..", "results")
 os.makedirs(RESULTS, exist_ok=True)
 
-
+# Thread counts to probe
 THREAD_GRID = [1, 2, 4, 8, 16, 32]
-
 
 def _threads_available() -> int:
     try:
         return len(os.sched_getaffinity(0))
     except AttributeError:
         return os.cpu_count() or 1
-
 
 def _grid(maxt: int):
     g = [t for t in THREAD_GRID if t <= maxt]
@@ -44,18 +41,16 @@ def make_dataset(cfg):
     return db, params, truth
 
 
+
 def exp_impl_comparison(db, params, cfg, n_runs):
     print("[impl_comparison]")
     rows = []
 
-
     cap = min(db.n_docs, 400)
     sub = C.ShingleDB(db.vals[:db.offsets[cap]], db.offsets[:cap + 1], cap)
-    s, _ = C.benchmark(C.minhash_signatures_python, sub, params,
-                       n_runs=1, warmup=0, label="python")
+    s, _ = C.benchmark(C.minhash_signatures_python, sub, params, n_runs=1, warmup=0, label="python")
     py_full = s.mean * (db.n_docs / cap)
-    rows.append(dict(impl="pure_python", mean_s=py_full, std_s=0.0,
-                     min_s=py_full, max_s=py_full, cpu_s=py_full,
+    rows.append(dict(impl="pure_python", mean_s=py_full, std_s=0.0, min_s=py_full, max_s=py_full, cpu_s=py_full,
                      note=f"extrapolated x{db.n_docs/cap:.1f} from {cap} docs"))
 
     maxt = get_num_threads()
@@ -69,8 +64,7 @@ def exp_impl_comparison(db, params, cfg, n_runs):
     for name, fn, args in impls:
         s, out = C.benchmark(fn, *args, n_runs=n_runs, warmup=2, label=name)
         assert np.array_equal(out, ref), f"{name} disagrees with reference!"
-        rows.append(dict(impl=name, mean_s=s.mean, std_s=s.std, min_s=s.min,
-                         max_s=s.max, cpu_s=s.cpu_mean, note="validated==ref"))
+        rows.append(dict(impl=name, mean_s=s.mean, std_s=s.std, min_s=s.min, max_s=s.max, cpu_s=s.cpu_mean, note="validated==ref"))
 
     df = pd.DataFrame(rows)
     base = df.loc[df.impl == "pure_python", "mean_s"].values[0]
@@ -86,14 +80,11 @@ def exp_thread_scaling(db, params, cfg, n_runs):
     rows = []
     t1 = None
     for th in _grid(maxt):
-        s, _ = C.benchmark(lambda d, p: MN.minhash_numba_parallel(d, p, n_threads=th),
-                           db, params, n_runs=n_runs, warmup=2, label=f"threads={th}")
+        s, _ = C.benchmark(lambda d, p: MN.minhash_numba_parallel(d, p, n_threads=th), db, params, n_runs=n_runs, warmup=2, label=f"threads={th}")
         if th == 1:
             t1 = s.mean
-        rows.append(dict(threads=th, mean_s=s.mean, std_s=s.std, min_s=s.min,
-                         cpu_s=s.cpu_mean,
-                         speedup=(t1 / s.mean) if t1 else 1.0,
-                         efficiency=((t1 / s.mean) / th) if t1 else 1.0))
+        rows.append(dict(threads=th, mean_s=s.mean, std_s=s.std, min_s=s.min, cpu_s=s.cpu_mean,
+                         speedup=(t1 / s.mean) if t1 else 1.0, efficiency=((t1 / s.mean) / th) if t1 else 1.0))
     df = pd.DataFrame(rows)
     df.to_csv(os.path.join(RESULTS, "thread_scaling.csv"), index=False)
     print(df[["threads", "mean_s", "speedup", "efficiency"]].to_string(index=False))
@@ -107,17 +98,16 @@ def exp_weak_scaling(cfg, n_runs):
     rows = []
     for th in _grid(maxt):
         n_docs = per_thread * th
-        docs, _ = C.generate_corpus(n_docs=n_docs, vocab_size=cfg["vocab"],
-                                    doc_len=cfg["doc_len"], seed=3)
+        docs, _ = C.generate_corpus(n_docs=n_docs, vocab_size=cfg["vocab"], doc_len=cfg["doc_len"], seed=3)
         db = C.build_shingle_db(docs, k=cfg["k"])
         params = C.MinHashParams.create(cfg["n_hashes"], seed=2)
-        MN.minhash_numba_parallel(db, params, n_threads=th)
+        MN.minhash_numba_parallel(db, params, n_threads=th)      # warm
         s, _ = C.benchmark(lambda d, p: MN.minhash_numba_parallel(d, p, n_threads=th),
                            db, params, n_runs=n_runs, warmup=1, label=f"weak t={th}")
         rows.append(dict(threads=th, n_docs=n_docs, mean_s=s.mean, std_s=s.std))
     df = pd.DataFrame(rows)
     t1 = df.loc[df.threads == 1, "mean_s"].values[0]
-    df["weak_efficiency"] = t1 / df["mean_s"]
+    df["weak_efficiency"] = t1 / df["mean_s"]        # ideal weak scaling -> 1.0
     df.to_csv(os.path.join(RESULTS, "weak_scaling.csv"), index=False)
     print(df.to_string(index=False))
     return df
@@ -211,31 +201,73 @@ def exp_vectorization(db, params, cfg, n_runs):
     return df
 
 
+def exp_gpu(db, params, cfg, n_runs):
+    print("\n[gpu: CUDA]")
+    if not MC.gpu_available():
+        print("  [SKIP] no CUDA GPU detected. Run on a GPU machine to populate "
+              "gpu.csv / gpu_block_size.csv.")
+        return None
+
+    ref = C.minhash_signatures_numpy(db, params)
+    maxt = get_num_threads()
+
+    # CPU baseline
+    s_cpu, _ = C.benchmark(lambda d, p: MN.minhash_numba_parallel(d, p, n_threads=maxt),
+                           db, params, n_runs=n_runs, warmup=2, label="cpu_numba")
+
+    rows_cmp = [dict(impl="numba_parallel_cpu", mean_s=s_cpu.mean, std_s=s_cpu.std)]
+
+    # Block-size sweep (global kernel)
+    rows_bs = []
+    for bs in [32, 64, 128, 256, 512, 1024]:
+        run = MC.make_gpu_runner(db, params, block_size=bs, use_shared=False)
+        assert np.array_equal(run(), ref), f"GPU global bs={bs} disagrees!"
+        s, _ = C.benchmark(run, n_runs=n_runs, warmup=3, label=f"gpu_global bs={bs}")
+        rows_bs.append(dict(kernel="global", block_size=bs, mean_s=s.mean, std_s=s.std))
+    # Best global block size -> comparison row
+    best = min(rows_bs, key=lambda r: r["mean_s"])
+    rows_cmp.append(dict(impl=f"gpu_global(bs={best['block_size']})",
+                         mean_s=best["mean_s"], std_s=best["std_s"]))
+
+    # Shared-memory kernel
+    run_sh = MC.make_gpu_runner(db, params, use_shared=True)
+    assert np.array_equal(run_sh(), ref), "GPU shared disagrees!"
+    s_sh, _ = C.benchmark(run_sh, n_runs=n_runs, warmup=3, label="gpu_shared")
+    rows_cmp.append(dict(impl="gpu_shared", mean_s=s_sh.mean, std_s=s_sh.std))
+    rows_bs.append(dict(kernel="shared", block_size=params.n_hashes, mean_s=s_sh.mean, std_s=s_sh.std))
+
+    df_bs = pd.DataFrame(rows_bs)
+    df_cmp = pd.DataFrame(rows_cmp)
+    df_cmp["speedup_vs_cpu"] = s_cpu.mean / df_cmp["mean_s"]
+    df_bs.to_csv(os.path.join(RESULTS, "gpu_block_size.csv"), index=False)
+    df_cmp.to_csv(os.path.join(RESULTS, "gpu_compare.csv"), index=False)
+    print(df_bs.to_string(index=False))
+    print(df_cmp.to_string(index=False))
+    return df_cmp
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--quick", action="store_true",
-                    help="small dataset for a fast dev/CI run")
+    ap.add_argument("--quick", action="store_true", help="small dataset for a fast dev/CI run")
     args = ap.parse_args()
 
     if args.quick:
-        cfg = dict(n_docs=800, vocab=6000, doc_len=150, k=4, n_hashes=64,
-                   n_dup_clusters=20)
+        cfg = dict(n_docs=800, vocab=6000, doc_len=150, k=4, n_hashes=64, n_dup_clusters=20)
         n_runs = 5
     else:
-        cfg = dict(n_docs=6000, vocab=30000, doc_len=400, k=5, n_hashes=256,
-                   n_dup_clusters=60)
+        cfg = dict(n_docs=6000, vocab=30000, doc_len=400, k=5, n_hashes=256, n_dup_clusters=60)
         n_runs = 10
 
     print("=" * 68)
     print("  MinHash + LSH  --  parallel benchmark suite")
     print("=" * 68)
-    print(f"  mode      : {'QUICK' if args.quick else 'FULL'}")
-    print(f"  config    : {cfg}")
+    print(f"  mode: {'QUICK' if args.quick else 'FULL'}")
+    print(f"  config: {cfg}")
     print(f"  numba max threads: {get_num_threads()}   affinity cores: {_threads_available()}")
     print("=" * 68)
 
     db, params, truth = make_dataset(cfg)
-    print(f"  dataset   : docs={db.n_docs}  nnz={db.nnz}  N={params.n_hashes}")
+    print(f"  dataset: docs={db.n_docs}  nnz={db.nnz}  N={params.n_hashes}")
     MN.warmup(db, params)
 
     pd.DataFrame([cfg]).to_csv(os.path.join(RESULTS, "config.csv"), index=False)
@@ -247,9 +279,9 @@ def main():
     exp_joblib_chunks(db, params, cfg, n_runs)
     exp_lsh_sync(db, params, cfg, n_runs)
     exp_vectorization(db, params, cfg, n_runs)
+    exp_gpu(db, params, cfg, n_runs)
 
     print("\nAll CSVs written to results/. Run plot_results.py to render figures.")
-
 
 if __name__ == "__main__":
     main()

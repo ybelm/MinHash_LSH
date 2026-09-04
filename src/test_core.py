@@ -1,12 +1,10 @@
 import numpy as np
-
 import core as C
-
 
 def test_estimator_unbiased(tol=0.03):
     print("\n--- [1] MinHash estimator vs true Jaccard ---")
     rng = np.random.default_rng(1)
-
+    # Build pairs of documents with a varied overlap
     docs = []
     for _ in range(40):
         base = rng.integers(0, 5000, size=400, dtype=np.int64)
@@ -19,7 +17,7 @@ def test_estimator_unbiased(tol=0.03):
         docs.append(base)
         docs.append(m)
 
-    db = C.build_shingle_db(docs, k=1)
+    db = C.build_shingle_db(docs, k=1)   # k=1 -> shingle set == token set
     params = C.MinHashParams.create(256, seed=7)
     sig = C.minhash_signatures_numpy(db, params)
 
