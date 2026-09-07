@@ -11,7 +11,6 @@ validate:
 	cd $(SRC) && $(PY) minhash_numba.py
 	cd $(SRC) && $(PY) minhash_joblib.py
 	cd $(SRC) && $(PY) lsh_parallel.py
-	cd $(SRC) && $(PY) async_preprocess.py
 
 
 validate-gpu-sim:

@@ -31,7 +31,6 @@ src/
 ├── minhash_joblib.py    # process/thread-parallel MinHash across document chunks
 ├── lsh_parallel.py      # parallel LSH: reduction vs shared-lock vs coarse-lock
 ├── minhash_cuda.py      # Numba CUDA kernels (global + shared memory), GPU wrapper
-├── async_preprocess.py  # asyncio I/O demo (and the CPU-bound anti-pattern)
 ├── run_experiments.py   # runs the whole suite -> results/*.csv
 ├── plot_results.py      # results/*.csv -> results/plots/*.png
 └── test_core.py         # correctness tests for the reference pipeline
